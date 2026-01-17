@@ -29,6 +29,22 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+def _parse_ts(value: str) -> dt.datetime:
+    if not value:
+        raise ValueError("Missing timestamp")
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _normalize_ts(value: str) -> str:
+    return _parse_ts(value).isoformat()
+
+
 def _model_to_dict(model: Any) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=True)
@@ -55,7 +71,10 @@ def _parse_range(range_str: Optional[str]) -> dt.timedelta:
 def _is_newer(new_ts: str, last_ts: Optional[str]) -> bool:
     if not last_ts:
         return True
-    return new_ts >= last_ts
+    try:
+        return _parse_ts(new_ts) >= _parse_ts(last_ts)
+    except ValueError:
+        return new_ts >= last_ts
 
 
 def _parse_last_event_id(request: Request) -> Optional[int]:
@@ -266,6 +285,10 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
         _upsert_device(conn, batch.device_id, batch.firmware, now)
 
         for reading in batch.readings:
+            try:
+                reading_ts = _normalize_ts(reading.ts)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Invalid reading timestamp") from exc
             meta = sensor_meta_lookup.get(reading.sensor_id)
             _upsert_sensor(
                 conn,
@@ -293,32 +316,33 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO readings
-                (seq_id, sensor_id, ts, raw_value, normalized_value, state, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                (device_id, seq_id, sensor_id, ts, raw_value, normalized_value, state, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
+                    batch.device_id,
                     reading.seq_id,
                     reading.sensor_id,
-                    reading.ts,
+                    reading_ts,
                     reading.raw_value,
                     reading.normalized_value,
                     resolved_state,
                     now,
                 ),
             )
+            ack_seq = reading.seq_id
             if cursor.rowcount == 0:
                 continue
 
-            if _is_newer(reading.ts, prev_ts):
+            if _is_newer(reading_ts, prev_ts):
                 _update_sensor_state(
                     conn,
                     reading.sensor_id,
                     resolved_state,
                     reading.normalized_value,
-                    reading.ts,
+                    reading_ts,
                 )
 
-            ack_seq = reading.seq_id
             events.append(
                 {
                     "type": "item_status_update",
@@ -326,7 +350,7 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
                     "item_id": item["id"] if item else None,
                     "state": resolved_state,
                     "normalized_value": reading.normalized_value,
-                    "ts": reading.ts,
+                    "ts": reading_ts,
                 }
             )
 
