@@ -62,36 +62,13 @@ continuing.
 
 ## Solution documentation
 
-### Problem statement
-Smart home teams track devices, firmware, locations, and ownership across
-multiple tools. This fragments inventory data, slows audits, and makes it
-hard to answer basic questions like "what is installed where" and "who owns
-it."
+Full system documentation is in `SOLUTION.md`, including architecture, data
+flow, service configuration, APIs, and deployment notes.
 
-### Solution overview
-The Smart Home Inventory System centralizes device inventory in a single,
-searchable source of truth. It standardizes device records, links them to
-locations and owners, and preserves lifecycle history so teams can operate
-and audit confidently.
-
-### Solution diagram
-```mermaid
-flowchart LR
-  Devices[Devices] --> Inventory[Inventory System]
-  Locations[Locations] --> Inventory
-  Owners[Owners] --> Inventory
-  Firmware[Firmware] --> Inventory
-  Inventory --> Reports[Audit & Ops Reports]
-  Inventory --> Integrations[Downstream Integrations]
-```
-
-### How the solution communicates
-The solution communicates by:
-- Providing a consistent inventory model (device, location, owner, status)
-  that teams can reference and query.
-- Emitting clear, structured updates for lifecycle changes so other systems
-  can sync or alert on changes.
-- Presenting concise, human-readable summaries for audits and operations.
+Component guides:
+- `device/README.md`
+- `server/README.md`
+- `ui/README.md`
 
 ## UI tests (Playwright)
 
