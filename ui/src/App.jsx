@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ackAlert,
@@ -8,6 +8,7 @@ import {
   fetchItem,
   fetchItems,
   getBaseUrl,
+  getStreamUrl,
   hasUiToken,
 } from "./api.js";
 import AlertsPanel from "./components/AlertsPanel.jsx";
@@ -61,6 +62,8 @@ const App = () => {
   const [lastRefreshed, setLastRefreshed] = useState(
     readCache(cacheKey("lastRefreshed"), null),
   );
+  const lastEventIdRef = useRef(readCache(cacheKey("lastEventId"), null));
+  const [sseConnected, setSseConnected] = useState(false);
 
   const baseUrl = useMemo(() => getBaseUrl(), []);
 
@@ -131,9 +134,49 @@ const App = () => {
 
   useEffect(() => {
     refreshAll();
+    if (sseConnected) {
+      return undefined;
+    }
     const interval = setInterval(() => refreshAll(true), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [refreshAll]);
+  }, [refreshAll, sseConnected]);
+
+  useEffect(() => {
+    if (typeof EventSource === "undefined") {
+      return undefined;
+    }
+    const streamUrl = getStreamUrl(lastEventIdRef.current);
+    const eventSource = new EventSource(streamUrl);
+
+    eventSource.onopen = () => setSseConnected(true);
+    eventSource.onerror = () => setSseConnected(false);
+    eventSource.onmessage = (event) => {
+      if (event.lastEventId) {
+        lastEventIdRef.current = event.lastEventId;
+        writeCache(cacheKey("lastEventId"), event.lastEventId);
+      }
+      if (!event.data) {
+        return;
+      }
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (err) {
+        return;
+      }
+      refreshAll(true);
+      if (payload.type === "item_status_update") {
+        if (!payload.item_id || payload.item_id === selectedItemId) {
+          refreshItem();
+        }
+      }
+    };
+
+    return () => {
+      eventSource.close();
+      setSseConnected(false);
+    };
+  }, [refreshAll, refreshItem, selectedItemId]);
 
   useEffect(() => {
     refreshItem();

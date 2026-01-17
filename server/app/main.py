@@ -11,9 +11,18 @@ from fastapi.responses import StreamingResponse
 
 from .auth import require_device_auth, require_ui_auth
 from .config import AppConfig, load_config
-from .db import dumps_json, get_db, init_db, loads_json
+from .db import (
+    dumps_json,
+    get_db,
+    init_db,
+    load_events_since,
+    loads_json,
+    prune_events,
+    record_event,
+)
 from .events import EventBroadcaster
 from .models import ItemCreate, ItemUpdate, ReadingsBatchIn, ThresholdsIn
+from .state import resolve_state
 
 
 def _utc_now() -> str:
@@ -49,6 +58,18 @@ def _is_newer(new_ts: str, last_ts: Optional[str]) -> bool:
     return new_ts >= last_ts
 
 
+def _parse_last_event_id(request: Request) -> Optional[int]:
+    candidate = request.headers.get("Last-Event-ID") or request.query_params.get(
+        "last_event_id"
+    )
+    if not candidate:
+        return None
+    try:
+        return int(candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Last-Event-ID") from exc
+
+
 def _upsert_device(conn, device_id: str, firmware: Optional[str], last_seen: str) -> None:
     conn.execute(
         """
@@ -60,7 +81,14 @@ def _upsert_device(conn, device_id: str, firmware: Optional[str], last_seen: str
     )
 
 
-def _ensure_sensor(conn, sensor_id: str, device_id: str) -> None:
+def _upsert_sensor(
+    conn,
+    sensor_id: str,
+    device_id: str,
+    sensor_type: Optional[str] = None,
+    thresholds: Optional[Dict[str, float]] = None,
+    state_map: Optional[Dict[str, str]] = None,
+) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO sensors (id, device_id)
@@ -68,15 +96,49 @@ def _ensure_sensor(conn, sensor_id: str, device_id: str) -> None:
         """,
         (sensor_id, device_id),
     )
+    updates = ["device_id = ?"]
+    values: List[Any] = [device_id]
+    if sensor_type is not None:
+        updates.append("type = ?")
+        values.append(sensor_type)
+    if thresholds is not None:
+        updates.append("thresholds = ?")
+        values.append(dumps_json(thresholds))
+    if state_map is not None:
+        updates.append("state_map = ?")
+        values.append(dumps_json(state_map))
+    if updates:
+        values.append(sensor_id)
+        conn.execute(
+            f"UPDATE sensors SET {', '.join(updates)} WHERE id = ?;",
+            values,
+        )
 
 
-def _get_sensor_state(conn, sensor_id: str) -> Tuple[Optional[str], Optional[str]]:
+def _get_sensor_meta(
+    conn, sensor_id: str
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[Dict[str, float]],
+    Optional[Dict[str, str]],
+]:
     row = conn.execute(
-        "SELECT last_state, last_update FROM sensors WHERE id = ?;", (sensor_id,)
+        """
+        SELECT last_state, last_update, thresholds, state_map
+        FROM sensors
+        WHERE id = ?;
+        """,
+        (sensor_id,),
     ).fetchone()
     if not row:
-        return None, None
-    return row["last_state"], row["last_update"]
+        return None, None, None, None
+    return (
+        row["last_state"],
+        row["last_update"],
+        loads_json(row["thresholds"]),
+        loads_json(row["state_map"]),
+    )
 
 
 def _update_sensor_state(
@@ -107,7 +169,9 @@ def _get_item_for_sensor(conn, sensor_id: str) -> Optional[Dict[str, Any]]:
     ).fetchone()
     if not row:
         return None
-    return dict(row)
+    item = dict(row)
+    item["thresholds"] = loads_json(item["thresholds"])
+    return item
 
 
 def _create_alert(
@@ -170,6 +234,12 @@ async def _startup() -> None:
 
 
 def _broadcast(request: Request, event: Dict[str, Any]) -> None:
+    config: AppConfig = request.app.state.config
+    now = _utc_now()
+    with get_db(config) as conn:
+        event_id = record_event(conn, event, now)
+        prune_events(conn, config.event_retention_seconds, config.event_max_rows, now)
+    event["event_id"] = event_id
     loop = request.app.state.loop
     if loop is None:
         return
@@ -188,13 +258,38 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
     now = _utc_now()
     ack_seq: Optional[int] = None
     events: List[Dict[str, Any]] = []
+    sensor_meta_lookup: Dict[str, Any] = {}
+    if batch.sensor_meta:
+        sensor_meta_lookup = {meta.sensor_id: meta for meta in batch.sensor_meta}
 
     with get_db(config) as conn:
         _upsert_device(conn, batch.device_id, batch.firmware, now)
 
         for reading in batch.readings:
-            _ensure_sensor(conn, reading.sensor_id, batch.device_id)
-            prev_state, prev_ts = _get_sensor_state(conn, reading.sensor_id)
+            meta = sensor_meta_lookup.get(reading.sensor_id)
+            _upsert_sensor(
+                conn,
+                reading.sensor_id,
+                batch.device_id,
+                sensor_type=meta.type if meta else None,
+                thresholds=meta.thresholds if meta else None,
+                state_map=meta.state_map if meta else None,
+            )
+            prev_state, prev_ts, sensor_thresholds, sensor_state_map = _get_sensor_meta(
+                conn, reading.sensor_id
+            )
+            item = _get_item_for_sensor(conn, reading.sensor_id)
+            item_thresholds = item["thresholds"] if item else None
+            effective_thresholds = (
+                item_thresholds if item_thresholds is not None else sensor_thresholds
+            )
+            resolved_state = resolve_state(
+                reading.normalized_value,
+                reading.state,
+                prev_state,
+                effective_thresholds,
+                sensor_state_map,
+            )
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO readings
@@ -207,7 +302,7 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
                     reading.ts,
                     reading.raw_value,
                     reading.normalized_value,
-                    reading.state,
+                    resolved_state,
                     now,
                 ),
             )
@@ -218,37 +313,36 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
                 _update_sensor_state(
                     conn,
                     reading.sensor_id,
-                    reading.state,
+                    resolved_state,
                     reading.normalized_value,
                     reading.ts,
                 )
 
             ack_seq = reading.seq_id
-            item = _get_item_for_sensor(conn, reading.sensor_id)
             events.append(
                 {
                     "type": "item_status_update",
                     "sensor_id": reading.sensor_id,
                     "item_id": item["id"] if item else None,
-                    "state": reading.state,
+                    "state": resolved_state,
                     "normalized_value": reading.normalized_value,
                     "ts": reading.ts,
                 }
             )
 
-            if prev_state != reading.state:
-                if reading.state in {"low", "out"}:
+            if prev_state != resolved_state:
+                if resolved_state in {"low", "out"}:
                     item_name = item["name"] if item else None
                     message = (
-                        f"{item_name} is {reading.state}"
+                        f"{item_name} is {resolved_state}"
                         if item_name
-                        else f"Sensor {reading.sensor_id} is {reading.state}"
+                        else f"Sensor {reading.sensor_id} is {resolved_state}"
                     )
                     alert_id = _create_alert(
                         conn,
                         reading.sensor_id,
                         item["id"] if item else None,
-                        reading.state,
+                        resolved_state,
                         message,
                         now,
                     )
@@ -258,12 +352,12 @@ def ingest_readings(batch: ReadingsBatchIn, request: Request) -> Dict[str, Any]:
                             "alert_id": alert_id,
                             "sensor_id": reading.sensor_id,
                             "item_id": item["id"] if item else None,
-                            "state": reading.state,
+                            "state": resolved_state,
                             "created_at": now,
                             "message": message,
                         }
                     )
-                if reading.state == "ok":
+                if resolved_state == "ok":
                     _resolve_alerts(conn, reading.sensor_id, now)
                     events.append(
                         {
@@ -417,6 +511,11 @@ def create_item(payload: ItemCreate, request: Request) -> Dict[str, Any]:
                 now,
             ),
         )
+        if payload.sensor_id and payload.thresholds is not None:
+            conn.execute(
+                "UPDATE sensors SET thresholds = ? WHERE id = ?;",
+                (dumps_json(payload.thresholds), payload.sensor_id),
+            )
     return {"id": item_id, "created_at": now}
 
 
@@ -449,6 +548,14 @@ def update_item(item_id: str, payload: ItemUpdate, request: Request) -> Dict[str
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found")
+        row = conn.execute(
+            "SELECT sensor_id, thresholds FROM items WHERE id = ?;", (item_id,)
+        ).fetchone()
+        if row and row["sensor_id"]:
+            conn.execute(
+                "UPDATE sensors SET thresholds = ? WHERE id = ?;",
+                (row["thresholds"], row["sensor_id"]),
+            )
 
     return {"id": item_id, "updated_at": now}
 
@@ -471,6 +578,14 @@ def update_thresholds(
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found")
+        row = conn.execute(
+            "SELECT sensor_id FROM items WHERE id = ?;", (item_id,)
+        ).fetchone()
+        if row and row["sensor_id"]:
+            conn.execute(
+                "UPDATE sensors SET thresholds = ? WHERE id = ?;",
+                (dumps_json(_model_to_dict(payload)), row["sensor_id"]),
+            )
     return {"id": item_id, "updated_at": now}
 
 
@@ -561,10 +676,25 @@ def list_sensors(request: Request) -> Dict[str, Any]:
 @app.get("/api/v1/stream")
 async def stream(request: Request) -> StreamingResponse:
     require_ui_auth(request)
+    config: AppConfig = request.app.state.config
+    last_event_id = _parse_last_event_id(request)
     queue = await request.app.state.events.subscribe()
 
     async def event_generator():
+        last_sent_id = last_event_id or 0
         try:
+            if last_event_id is not None:
+                with get_db(config) as conn:
+                    buffered = load_events_since(
+                        conn, last_event_id, config.event_replay_limit
+                    )
+                for event in buffered:
+                    payload = json.dumps(event, ensure_ascii=True)
+                    event_id = event.get("event_id")
+                    if event_id is not None:
+                        last_sent_id = max(last_sent_id, int(event_id))
+                        yield f"id: {event_id}\n"
+                    yield f"data: {payload}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -573,7 +703,14 @@ async def stream(request: Request) -> StreamingResponse:
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
+                event_id = event.get("event_id")
+                if event_id is not None:
+                    if int(event_id) <= last_sent_id:
+                        continue
+                    last_sent_id = int(event_id)
                 payload = json.dumps(event, ensure_ascii=True)
+                if event_id is not None:
+                    yield f"id: {event_id}\n"
                 yield f"data: {payload}\n\n"
         finally:
             await request.app.state.events.unsubscribe(queue)

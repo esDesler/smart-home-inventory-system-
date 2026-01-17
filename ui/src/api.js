@@ -60,3 +60,13 @@ export const fetchSensors = async () => apiGet("/api/v1/sensors");
 
 export const getBaseUrl = () => baseUrl;
 export const hasUiToken = () => Boolean(uiToken);
+export const getStreamUrl = (lastEventId) => {
+  const url = new URL(`${baseUrl}/api/v1/stream`);
+  if (uiToken) {
+    url.searchParams.set("token", uiToken);
+  }
+  if (lastEventId) {
+    url.searchParams.set("last_event_id", lastEventId);
+  }
+  return url.toString();
+};

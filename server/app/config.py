@@ -22,6 +22,9 @@ class AppConfig:
     ui_token: Optional[str]
     allow_unauth: bool
     event_queue_size: int
+    event_retention_seconds: int
+    event_max_rows: int
+    event_replay_limit: int
     history_limit: int
     cors_origins: List[str]
 
@@ -33,6 +36,11 @@ def load_config() -> AppConfig:
         ui_token=os.getenv("INVENTORY_UI_TOKEN"),
         allow_unauth=_parse_bool(os.getenv("INVENTORY_ALLOW_UNAUTH"), default=False),
         event_queue_size=int(os.getenv("INVENTORY_EVENT_QUEUE_SIZE", "100")),
+        event_retention_seconds=int(
+            os.getenv("INVENTORY_EVENT_RETENTION_SECONDS", "604800")
+        ),
+        event_max_rows=int(os.getenv("INVENTORY_EVENT_MAX_ROWS", "10000")),
+        event_replay_limit=int(os.getenv("INVENTORY_EVENT_REPLAY_LIMIT", "500")),
         history_limit=int(os.getenv("INVENTORY_HISTORY_LIMIT", "2000")),
         cors_origins=_parse_list(os.getenv("INVENTORY_CORS_ORIGINS")),
     )

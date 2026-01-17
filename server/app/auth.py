@@ -13,6 +13,13 @@ def _extract_bearer(auth_header: Optional[str]) -> Optional[str]:
     return None
 
 
+def _extract_ui_token(request: Request) -> Optional[str]:
+    token = _extract_bearer(request.headers.get("Authorization"))
+    if token:
+        return token
+    return request.query_params.get("token")
+
+
 def _get_config(request: Request) -> AppConfig:
     return request.app.state.config
 
@@ -34,7 +41,7 @@ def require_device_auth(request: Request) -> None:
 
 def require_ui_auth(request: Request) -> None:
     config = _get_config(request)
-    token = _extract_bearer(request.headers.get("Authorization"))
+    token = _extract_ui_token(request)
     if config.ui_token:
         if token == config.ui_token:
             return

@@ -18,6 +18,9 @@ real-time updates via SSE. Runs on a single machine (LAN-first) with SQLite.
    - `INVENTORY_UI_TOKEN=ui-token-1`
    - `INVENTORY_ALLOW_UNAUTH=false`
    - `INVENTORY_CORS_ORIGINS=http://localhost:5173`
+   - `INVENTORY_EVENT_RETENTION_SECONDS=604800`
+   - `INVENTORY_EVENT_MAX_ROWS=10000`
+   - `INVENTORY_EVENT_REPLAY_LIMIT=500`
 
 3) Run the server:
 
@@ -27,7 +30,8 @@ real-time updates via SSE. Runs on a single machine (LAN-first) with SQLite.
 
 - Device ingestion: `POST /api/v1/readings/batch`
 - UI list: `GET /api/v1/items`
-- UI events: `GET /api/v1/stream` (SSE)
+- UI events: `GET /api/v1/stream` (SSE, supports `Last-Event-ID`)
+  - For browser EventSource, send `?token=...` if UI auth is enabled.
 
 ## Example device request
 
