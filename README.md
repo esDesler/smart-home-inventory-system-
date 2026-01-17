@@ -14,6 +14,17 @@ searchable source of truth. It standardizes device records, links them to
 locations and owners, and preserves lifecycle history so teams can operate
 and audit confidently.
 
+### Solution diagram
+```mermaid
+flowchart LR
+  Devices[Devices] --> Inventory[Inventory System]
+  Locations[Locations] --> Inventory
+  Owners[Owners] --> Inventory
+  Firmware[Firmware] --> Inventory
+  Inventory --> Reports[Audit & Ops Reports]
+  Inventory --> Integrations[Downstream Integrations]
+```
+
 ### How the solution communicates
 The solution communicates by:
 - Providing a consistent inventory model (device, location, owner, status)
