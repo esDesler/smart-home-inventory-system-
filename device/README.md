@@ -16,6 +16,10 @@ locally, and uploads batched updates to the server over HTTPS.
    - Set `network.base_url`
    - Provide `network.api_token` or use `env:DEVICE_TOKEN`
    - Use `file_sensor` to simulate values during development
+   - Optional: set `storage.max_queue_rows` / `storage.max_queue_age_seconds` to
+     cap offline buffering
+   - If the server is the source of truth for thresholds/alerts, set
+     `runtime.state_source` to `server` to report every sample
 
 3) Run the service:
 

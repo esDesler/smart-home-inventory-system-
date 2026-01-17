@@ -15,11 +15,14 @@
     "read_timeout_seconds": 10
   },
   "storage": {
-    "queue_db_path": "/var/lib/smart-inventory/queue.db"
+    "queue_db_path": "/var/lib/smart-inventory/queue.db",
+    "max_queue_rows": 5000,
+    "max_queue_age_seconds": 604800
   },
   "runtime": {
     "poll_interval_ms": 200,
-    "report_on_change_only": true
+    "report_on_change_only": true,
+    "state_source": "server"
   },
   "sensors": [
     {

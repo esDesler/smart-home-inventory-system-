@@ -3,8 +3,9 @@ import datetime as dt
 import logging
 import os
 import signal
+import threading
 import time
-from typing import Dict
+from typing import Dict, List, Optional
 
 from smart_inventory.config import AppConfig, load_config
 from smart_inventory.processing import SensorProcessor
@@ -16,13 +17,19 @@ from smart_inventory.transport import TransportError, post_readings_batch
 class DeviceService:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
-        self._queue = ReadingQueue(config.storage.queue_db_path)
+        self._queue = ReadingQueue(
+            config.storage.queue_db_path,
+            max_rows=config.storage.max_queue_rows,
+            max_age_seconds=config.storage.max_queue_age_seconds,
+        )
         self._sensors = []
         self._processors: Dict[str, SensorProcessor] = {}
-        self._stop = False
+        self._stop_event = threading.Event()
         self._last_flush = 0.0
         self._next_retry_at = 0.0
         self._retry_delay = 1.0
+        self._upload_thread: Optional[threading.Thread] = None
+        self._sensor_meta: List[Dict[str, object]] = []
 
         for sensor_cfg in config.sensors:
             try:
@@ -46,18 +53,33 @@ class DeviceService:
             )
             self._sensors.append(sensor)
             self._processors[sensor_cfg.sensor_id] = processor
+            meta: Dict[str, object] = {
+                "sensor_id": sensor_cfg.sensor_id,
+                "type": sensor_cfg.sensor_type,
+            }
+            if sensor_cfg.thresholds is not None:
+                meta["thresholds"] = sensor_cfg.thresholds
+            if sensor_cfg.state_map is not None:
+                meta["state_map"] = sensor_cfg.state_map
+            self._sensor_meta.append(meta)
 
         if not self._sensors:
             raise RuntimeError("No sensors initialized")
 
     def stop(self) -> None:
-        self._stop = True
+        self._stop_event.set()
 
     def run(self) -> None:
         logging.info("Smart Inventory device service starting")
         poll_interval = max(0.05, self._config.runtime.poll_interval_ms / 1000.0)
+        self._upload_thread = threading.Thread(
+            target=self._upload_loop,
+            name="smart-inventory-uploader",
+            daemon=True,
+        )
+        self._upload_thread.start()
 
-        while not self._stop:
+        while not self._stop_event.is_set():
             loop_start = time.time()
             timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
             for sensor in self._sensors:
@@ -71,12 +93,20 @@ class DeviceService:
                 if reading:
                     self._queue.enqueue(reading)
 
-            self._flush(loop_start)
             elapsed = time.time() - loop_start
             sleep_for = max(0.0, poll_interval - elapsed)
             time.sleep(sleep_for)
 
+        if self._upload_thread:
+            self._upload_thread.join(timeout=2.0)
         logging.info("Smart Inventory device service stopped")
+
+    def _upload_loop(self) -> None:
+        sleep_for = min(1.0, float(self._config.network.flush_interval_seconds))
+        while not self._stop_event.is_set():
+            now = time.time()
+            self._flush(now)
+            self._stop_event.wait(timeout=sleep_for)
 
     def _flush(self, now: float) -> None:
         if now < self._next_retry_at:
@@ -100,6 +130,8 @@ class DeviceService:
             "sent_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "readings": batch,
         }
+        if self._sensor_meta:
+            payload["sensor_meta"] = self._sensor_meta
 
         try:
             response = post_readings_batch(

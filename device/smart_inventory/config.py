@@ -44,12 +44,15 @@ class NetworkConfig:
 @dataclass
 class StorageConfig:
     queue_db_path: str
+    max_queue_rows: Optional[int] = None
+    max_queue_age_seconds: Optional[int] = None
 
 
 @dataclass
 class RuntimeConfig:
     poll_interval_ms: int = 200
     report_on_change_only: bool = True
+    state_source: str = "device"
 
 
 @dataclass
@@ -71,6 +74,8 @@ class SensorConfig:
         return "analog"
 
     def effective_report_on_change(self, runtime: RuntimeConfig) -> bool:
+        if runtime.state_source == "server":
+            return False
         if self.report_on_change_only is None:
             return runtime.report_on_change_only
         return self.report_on_change_only
@@ -93,6 +98,8 @@ class AppConfig:
             raise ValueError("storage.queue_db_path is required")
         if not self.sensors:
             raise ValueError("At least one sensor is required")
+        if self.runtime.state_source not in {"device", "server"}:
+            raise ValueError("runtime.state_source must be 'device' or 'server'")
 
 
 def _load_device(data: Dict[str, Any]) -> DeviceConfig:
@@ -117,13 +124,22 @@ def _load_network(data: Dict[str, Any]) -> NetworkConfig:
 
 
 def _load_storage(data: Dict[str, Any]) -> StorageConfig:
-    return StorageConfig(queue_db_path=data.get("queue_db_path", "queue.db"))
+    max_queue_rows = data.get("max_queue_rows")
+    max_queue_age_seconds = data.get("max_queue_age_seconds")
+    return StorageConfig(
+        queue_db_path=data.get("queue_db_path", "queue.db"),
+        max_queue_rows=int(max_queue_rows) if max_queue_rows is not None else None,
+        max_queue_age_seconds=int(max_queue_age_seconds)
+        if max_queue_age_seconds is not None
+        else None,
+    )
 
 
 def _load_runtime(data: Dict[str, Any]) -> RuntimeConfig:
     return RuntimeConfig(
         poll_interval_ms=int(data.get("poll_interval_ms", 200)),
         report_on_change_only=bool(data.get("report_on_change_only", True)),
+        state_source=str(data.get("state_source", "device")).lower(),
     )
 
 
