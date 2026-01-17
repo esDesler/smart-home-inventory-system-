@@ -2,7 +2,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from .config import AppConfig
 
@@ -18,6 +18,80 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name});").fetchall()
+    return [row["name"] for row in rows]
+
+
+def _unique_index_columns(conn: sqlite3.Connection, table_name: str) -> List[List[str]]:
+    indexes: List[List[str]] = []
+    rows = conn.execute(f"PRAGMA index_list({table_name});").fetchall()
+    for row in rows:
+        if not row["unique"]:
+            continue
+        index_name = row["name"]
+        column_rows = conn.execute(f"PRAGMA index_info({index_name});").fetchall()
+        indexes.append([column["name"] for column in column_rows])
+    return indexes
+
+
+def _needs_readings_migration(conn: sqlite3.Connection) -> bool:
+    columns = _table_columns(conn, "readings")
+    if "device_id" not in columns:
+        return True
+    unique_indexes = _unique_index_columns(conn, "readings")
+    if ["sensor_id", "seq_id"] in unique_indexes:
+        return True
+    if ["device_id", "sensor_id", "seq_id", "ts"] not in unique_indexes:
+        return True
+    return False
+
+
+def _migrate_readings_table(conn: sqlite3.Connection) -> None:
+    if not _needs_readings_migration(conn):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF;")
+    conn.execute("ALTER TABLE readings RENAME TO readings_old;")
+    conn.execute(
+        """
+        CREATE TABLE readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            seq_id INTEGER,
+            sensor_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            raw_value REAL,
+            normalized_value REAL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(device_id, sensor_id, seq_id, ts),
+            FOREIGN KEY(sensor_id) REFERENCES sensors(id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO readings (id, device_id, seq_id, sensor_id, ts, raw_value, normalized_value, state, created_at)
+        SELECT r.id,
+               COALESCE(s.device_id, 'unknown') AS device_id,
+               r.seq_id,
+               r.sensor_id,
+               r.ts,
+               r.raw_value,
+               r.normalized_value,
+               r.state,
+               r.created_at
+        FROM readings_old r
+        LEFT JOIN sensors s ON s.id = r.sensor_id;
+        """
+    )
+    conn.execute("DROP TABLE readings_old;")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_readings_sensor_ts ON readings(sensor_id, ts);"
+    )
+    conn.execute("PRAGMA foreign_keys = ON;")
 
 
 @contextmanager
@@ -82,6 +156,7 @@ def init_db(config: AppConfig) -> None:
             """
             CREATE TABLE IF NOT EXISTS readings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
                 seq_id INTEGER,
                 sensor_id TEXT NOT NULL,
                 ts TEXT NOT NULL,
@@ -89,7 +164,7 @@ def init_db(config: AppConfig) -> None:
                 normalized_value REAL,
                 state TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                UNIQUE(sensor_id, seq_id),
+                UNIQUE(device_id, sensor_id, seq_id, ts),
                 FOREIGN KEY(sensor_id) REFERENCES sensors(id)
             );
             """
@@ -110,6 +185,7 @@ def init_db(config: AppConfig) -> None:
             );
             """
         )
+        _migrate_readings_table(conn)
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_readings_sensor_ts ON readings(sensor_id, ts);"
         )
