@@ -4,7 +4,8 @@ from typing import Deque, Dict, Optional
 
 class Debouncer:
     def __init__(self, debounce_ms: int) -> None:
-        self._debounce_seconds = debounce_ms / 1000.0
+        # BUG: Wrong conversion factor - should be 1000.0, not 100.0
+        self._debounce_seconds = debounce_ms / 100.0
         self._last_raw = None
         self._last_change = None
         self._stable = None
