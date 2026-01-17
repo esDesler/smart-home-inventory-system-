@@ -1,0 +1,63 @@
+{
+  "device": {
+    "id": "pi-kitchen-01",
+    "location": "Kitchen",
+    "firmware": "0.1.0"
+  },
+  "network": {
+    "base_url": "https://inventory.local",
+    "api_token": "env:DEVICE_TOKEN",
+    "ca_cert_path": "/etc/ssl/certs/inventory-ca.pem",
+    "batch_size": 25,
+    "flush_interval_seconds": 15,
+    "retry_max_seconds": 300,
+    "connect_timeout_seconds": 5,
+    "read_timeout_seconds": 10
+  },
+  "storage": {
+    "queue_db_path": "/var/lib/smart-inventory/queue.db"
+  },
+  "runtime": {
+    "poll_interval_ms": 200,
+    "report_on_change_only": true
+  },
+  "sensors": [
+    {
+      "id": "loadcell-01",
+      "type": "hx711",
+      "gpio_dout": 5,
+      "gpio_sck": 6,
+      "scale_factor": 2280.0,
+      "tare_offset": 8388607,
+      "thresholds": {
+        "low": 150,
+        "ok": 200
+      },
+      "debounce_ms": 200,
+      "report_on_change_only": true
+    },
+    {
+      "id": "door-01",
+      "type": "digital_gpio",
+      "gpio_pin": 17,
+      "active_high": true,
+      "debounce_ms": 100,
+      "state_map": {
+        "on": "ok",
+        "off": "out"
+      },
+      "report_on_change_only": true
+    },
+    {
+      "id": "dev-file-01",
+      "type": "file_sensor",
+      "path": "/tmp/sensor_value.txt",
+      "mode": "analog",
+      "thresholds": {
+        "low": 150,
+        "ok": 200
+      },
+      "report_on_change_only": false
+    }
+  ]
+}

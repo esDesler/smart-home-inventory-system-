@@ -1,0 +1,17 @@
+[Unit]
+Description=Smart Inventory Device Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=smart-inventory
+Group=smart-inventory
+WorkingDirectory=/opt/smart-inventory/device
+Environment=SMART_INVENTORY_CONFIG=/etc/smart-inventory/config.json
+ExecStart=/usr/bin/python -m smart_inventory.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
