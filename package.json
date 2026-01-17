@@ -1,0 +1,24 @@
+{
+  "name": "smart-home-inventory-system",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test:ui",
+    "test:ui": "playwright test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/esDesler/smart-home-inventory-system-.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/esDesler/smart-home-inventory-system-/issues"
+  },
+  "homepage": "https://github.com/esDesler/smart-home-inventory-system-#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}
