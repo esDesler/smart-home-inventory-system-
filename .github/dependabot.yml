@@ -1,0 +1,49 @@
+# Dependabot configuration for automated dependency updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # npm dependencies (root - Playwright)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    groups:
+      playwright:
+        patterns:
+          - "@playwright/*"
+
+  # npm dependencies (UI)
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-*"
+      vite:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+
+  # Python dependencies (server)
+  - package-ecosystem: "pip"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
